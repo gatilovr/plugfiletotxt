@@ -3,10 +3,10 @@
 ## Metadata and Listing
 
 - [ ] Confirm final plugin name and id are stable.
-- [ ] Finalize short/long description (user value, key features, offline behavior).
+- [x] Finalize short/long description (user value, key features, offline behavior).
 - [ ] Add final screenshots/gif of main flow (select -> filter -> export).
 - [ ] Add icon assets (light/dark) and validate rendering.
-- [ ] Add tags/categories relevant to code tooling and productivity.
+- [x] Add tags/categories relevant to code tooling and productivity.
 - [ ] Ensure changelog is up to date for the release version.
 
 ## Build and Verification

@@ -14,6 +14,7 @@ import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.openapi.wm.ToolWindow;
 import com.intellij.openapi.wm.ToolWindowFactory;
 import com.intellij.ui.CheckboxTree;
+import com.intellij.ui.CheckboxTreeBase;
 import com.intellij.ui.CheckedTreeNode;
 import com.intellij.ui.components.JBScrollPane;
 import com.intellij.ui.content.Content;
@@ -285,6 +286,9 @@ public class MyToolWindowFactory implements ToolWindowFactory {
         }
 
         private CheckboxTree createCheckboxTree() {
+            CheckboxTreeBase.CheckPolicy checkPolicy =
+                    new CheckboxTreeBase.CheckPolicy(true, true, true, true);
+
             return new CheckboxTree(new CheckboxTree.CheckboxTreeCellRenderer() {
                 @Override
                 public void customizeRenderer(JTree tree, Object value, boolean selected,
@@ -296,7 +300,7 @@ public class MyToolWindowFactory implements ToolWindowFactory {
                         getTextRenderer().setIcon(file.isDirectory() ? AllIcons.Nodes.Folder : AllIcons.FileTypes.Text);
                     }
                 }
-            }, rootNode) {
+            }, rootNode, checkPolicy) {
                 @Override
                 protected void onNodeStateChanged(CheckedTreeNode node) {
                     super.onNodeStateChanged(node);
