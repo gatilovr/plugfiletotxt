@@ -1,0 +1,41 @@
+<idea-plugin>
+    <id>io.gatil.codeexporter</id>
+    <name>Code Exporter for AI</name>
+    <vendor>Gatil</vendor>
+
+    <description><![CDATA[
+        <h2>Code Exporter for AI</h2>
+        <p>Export selected project files into <code>.txt</code> format for AI analysis, audits, documentation, and reviews.</p>
+        <ul>
+            <li><strong>Any folder, not only opened project</strong> - choose any directory on disk</li>
+            <li><strong>Smart filters</strong> - all files, source files, Java/Kotlin, or XML only</li>
+            <li><strong>.gitignore option</strong> - skip ignored files when needed</li>
+            <li><strong>AI-oriented stats</strong> - file count, size, line count, and token estimate</li>
+            <li><strong>Export modes</strong> - keep folder structure or flatten into one output directory</li>
+        </ul>
+        <p>This plugin works fully offline and does not send code to external services.</p>
+    ]]></description>
+
+    <change-notes><![CDATA[
+        <ul>
+            <li><strong>1.0.0</strong> - Initial public release.</li>
+            <li>Directory picker independent from the currently opened IDE project.</li>
+            <li>File tree with filtering, optional <code>.gitignore</code> support, and export statistics.</li>
+            <li>Flat and structured export modes with progress reporting.</li>
+        </ul>
+    ]]></change-notes>
+
+    <depends>com.intellij.modules.platform</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <toolWindow
+            id="Code Exporter"
+            anchor="right"
+            factoryClass="com.example.plugfiletotxt.window.MyToolWindowFactory"
+            icon="/icons/toolWindow.svg"/>
+
+        <projectService
+            serviceInterface="com.example.plugfiletotxt.service.ProjectExportService"
+            serviceImplementation="com.example.plugfiletotxt.service.ProjectExportService"/>
+    </extensions>
+</idea-plugin>
