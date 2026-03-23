@@ -18,6 +18,11 @@
 
     <change-notes><![CDATA[
         <ul>
+            <li><strong>1.0.1</strong> - Stability and scalability update.</li>
+            <li>Fixed deprecated API usage in file tree component for better forward compatibility.</li>
+            <li>Added huge-file handling modes: skip, partial export, or full export.</li>
+            <li>Improved large-project behavior with streaming stats and parallel scan filtering.</li>
+            <li>Improved cancellation handling during scan and export operations.</li>
             <li><strong>1.0.0</strong> - Initial public release.</li>
             <li>Directory picker independent from the currently opened IDE project.</li>
             <li>File tree with filtering, optional <code>.gitignore</code> support, and export statistics.</li>
