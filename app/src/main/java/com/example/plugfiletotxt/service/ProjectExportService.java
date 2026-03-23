@@ -2,6 +2,7 @@ package com.example.plugfiletotxt.service;
 
 import com.intellij.openapi.components.Service;
 import com.intellij.openapi.diagnostic.Logger;
+import com.intellij.openapi.progress.ProcessCanceledException;
 import com.intellij.openapi.progress.ProgressIndicator;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.util.io.FileUtil;
@@ -12,13 +13,20 @@ import org.jetbrains.annotations.Nullable;
 import java.io.File;
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
+import java.io.BufferedReader;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.Reader;
 import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Pattern;
 
@@ -36,6 +44,9 @@ public final class ProjectExportService {
             ".mvn", ".settings", ".classpath", ".project", ".DS_Store"
     );
     private static final int MAX_TREE_DEPTH = 50;
+    private static final int SCAN_THREADS = Math.max(2, Math.min(8, Runtime.getRuntime().availableProcessors() / 2));
+    private static final long HUGE_FILE_THRESHOLD_BYTES = 10L * 1024 * 1024; // 10 MB
+    private static final long PARTIAL_EXPORT_BYTES = 1L * 1024 * 1024; // 1 MB
 
     private File currentRootFolder;
     private CheckedTreeNode rootNode;
@@ -207,108 +218,7 @@ public final class ProjectExportService {
     }
     
     public void incrementalUpdate(@Nullable ProgressIndicator indicator, int filterIndex, boolean respectGitignore) {
-        if (currentRootFolder == null || !currentRootFolder.exists() || rootNode == null) {
-            // Если нет данных — полное сканирование
-            scanFolder(indicator, filterIndex, respectGitignore);
-            return;
-        }
-
-        // Проверяем, нужно ли полное обновление
-        if (!needsRefresh()) {
-            // Данные актуальны, ничего не делаем
-            return;
-        }
-
-        // Собираем текущие пути для сравнения
-        Set<String> existingPaths = new HashSet<>();
-        collectFilePaths(rootNode, existingPaths);
-
-        // Создаём новое дерево
-        CheckedTreeNode newRoot = new CheckedTreeNode(currentRootFolder.getName());
-        newRoot.setUserObject(currentRootFolder);
-        
-        // Сбрасываем кэш временных меток
-        Map<String, Long> newFileTimestamps = new ConcurrentHashMap<>();
-
-        try {
-            Files.walkFileTree(currentRootFolder.toPath(), new SimpleFileVisitor<Path>() {
-                private int currentDepth = 0;
-
-                @Override
-                public @NotNull FileVisitResult preVisitDirectory(@NotNull Path dir, @NotNull BasicFileAttributes attrs) {
-                    if (indicator != null && indicator.isCanceled()) {
-                        return FileVisitResult.TERMINATE;
-                    }
-
-                    if (currentDepth > MAX_TREE_DEPTH) {
-                        return FileVisitResult.SKIP_SUBTREE;
-                    }
-
-                    File dirFile = dir.toFile();
-                    String name = dirFile.getName();
-
-                    if (shouldExcludeDir(name)) {
-                        return FileVisitResult.SKIP_SUBTREE;
-                    }
-
-                    if (!dir.equals(currentRootFolder.toPath())) {
-                        addFileToTree(newRoot, dirFile);
-                    }
-
-                    currentDepth++;
-                    return FileVisitResult.CONTINUE;
-                }
-
-                @Override
-                public @NotNull FileVisitResult visitFile(@NotNull Path path, @NotNull BasicFileAttributes attrs) {
-                    if (indicator != null && indicator.isCanceled()) {
-                        return FileVisitResult.TERMINATE;
-                    }
-
-                    File file = path.toFile();
-                    if (shouldIncludeFile(file, filterIndex, respectGitignore)) {
-                        // Обновляем кэш временных меток
-                        String absPath = file.getAbsolutePath();
-                        newFileTimestamps.put(absPath, file.lastModified());
-                        addFileToTree(newRoot, file);
-                    }
-
-                    return FileVisitResult.CONTINUE;
-                }
-
-                @Override
-                public @NotNull FileVisitResult postVisitDirectory(@NotNull Path dir, IOException exc) {
-                    currentDepth--;
-                    if (exc != null) {
-                        LOG.warn("Error visiting directory: " + dir, exc);
-                    }
-                    return FileVisitResult.CONTINUE;
-                }
-                
-                @Override
-                public @NotNull FileVisitResult visitFileFailed(@NotNull Path file, @NotNull IOException exc) {
-                    LOG.warn("Failed to visit file: " + file, exc);
-                    return FileVisitResult.CONTINUE;
-                }
-            });
-        } catch (IOException e) {
-            LOG.warn("Error scanning directory: " + currentRootFolder, e);
-        }
-
-        // Обновляем данные
-        this.rootNode = newRoot;
-        this.fileTimestamps.clear();
-        this.fileTimestamps.putAll(newFileTimestamps);
-        this.lastScanTime = System.currentTimeMillis();
-    }
-    
-    private void collectFilePaths(CheckedTreeNode node, Set<String> paths) {
-        if (node.getUserObject() instanceof File file) {
-            paths.add(file.getAbsolutePath());
-        }
-        for (int i = 0; i < node.getChildCount(); i++) {
-            collectFilePaths((CheckedTreeNode) node.getChildAt(i), paths);
-        }
+        scanFolder(indicator, filterIndex, respectGitignore);
     }
     
     public CheckedTreeNode scanFolder(@Nullable ProgressIndicator indicator, int filterIndex, boolean respectGitignore) {
@@ -335,6 +245,8 @@ public final class ProjectExportService {
         // Полное сканирование только при необходимости
         CheckedTreeNode root = new CheckedTreeNode(currentRootFolder.getName());
         root.setUserObject(currentRootFolder);
+        Map<String, Long> newFileTimestamps = new ConcurrentHashMap<>();
+        List<File> discoveredFiles = new ArrayList<>();
 
         try {
             Files.walkFileTree(currentRootFolder.toPath(), new SimpleFileVisitor<Path>() {
@@ -357,10 +269,6 @@ public final class ProjectExportService {
                         return FileVisitResult.SKIP_SUBTREE;
                     }
 
-                    if (!dir.equals(currentRootFolder.toPath())) {
-                        addFileToTree(root, dirFile);
-                    }
-
                     currentDepth++;
                     return FileVisitResult.CONTINUE;
                 }
@@ -371,12 +279,7 @@ public final class ProjectExportService {
                         return FileVisitResult.TERMINATE;
                     }
 
-                    File file = path.toFile();
-                    if (shouldIncludeFile(file, filterIndex, respectGitignore)) {
-                        // Обновляем кэш временных меток
-                        fileTimestamps.put(file.getAbsolutePath(), file.lastModified());
-                        addFileToTree(root, file);
-                    }
+                    discoveredFiles.add(path.toFile());
 
                     return FileVisitResult.CONTINUE;
                 }
@@ -396,13 +299,79 @@ public final class ProjectExportService {
                     return FileVisitResult.CONTINUE;
                 }
             });
+            if (indicator != null && indicator.isCanceled()) {
+                throw new ProcessCanceledException();
+            }
+
+            List<File> includedFiles = filterFilesInParallel(discoveredFiles, filterIndex, respectGitignore, indicator);
+            includedFiles.sort(Comparator.comparing(File::getAbsolutePath));
+            for (File file : includedFiles) {
+                if (indicator != null && indicator.isCanceled()) {
+                    throw new ProcessCanceledException();
+                }
+                newFileTimestamps.put(file.getAbsolutePath(), file.lastModified());
+                addFileToTree(root, file);
+            }
         } catch (IOException e) {
             LOG.warn("Error scanning directory: " + currentRootFolder, e);
+        } catch (ProcessCanceledException canceled) {
+            throw canceled;
         }
 
         lastScanTime = now;
         this.rootNode = root;
+        this.fileTimestamps.clear();
+        this.fileTimestamps.putAll(newFileTimestamps);
         return root;
+    }
+
+    @NotNull
+    private List<File> filterFilesInParallel(
+            @NotNull List<File> discoveredFiles,
+            int filterIndex,
+            boolean respectGitignore,
+            @Nullable ProgressIndicator indicator
+    ) {
+        if (discoveredFiles.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        ExecutorService executor = Executors.newFixedThreadPool(SCAN_THREADS);
+        List<Future<File>> futures = new ArrayList<>(discoveredFiles.size());
+        try {
+            for (File file : discoveredFiles) {
+                futures.add(executor.submit(() -> shouldIncludeFile(file, filterIndex, respectGitignore) ? file : null));
+            }
+
+            List<File> included = new ArrayList<>(discoveredFiles.size());
+            for (Future<File> future : futures) {
+                if (indicator != null && indicator.isCanceled()) {
+                    cancelFutures(futures);
+                    throw new ProcessCanceledException();
+                }
+                try {
+                    File includedFile = future.get();
+                    if (includedFile != null) {
+                        included.add(includedFile);
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    cancelFutures(futures);
+                    throw new ProcessCanceledException();
+                } catch (ExecutionException e) {
+                    LOG.warn("Error during parallel file filtering", e);
+                }
+            }
+            return included;
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    private void cancelFutures(@NotNull List<Future<File>> futures) {
+        for (Future<File> future : futures) {
+            future.cancel(true);
+        }
     }
 
     private void addFileToTree(@NotNull CheckedTreeNode root, @NotNull File file) {
@@ -481,7 +450,46 @@ public final class ProjectExportService {
         }
     }
 
-    public void exportFile(@NotNull File file, boolean flatMode, @NotNull File outputFolder) throws IOException {
+    @NotNull
+    public FileStats countFileStats(@NotNull File file) throws IOException {
+        long lines = 0;
+        long tokens = 0;
+        boolean inToken = false;
+
+        try (Reader reader = new BufferedReader(new InputStreamReader(new FileInputStream(file), java.nio.charset.StandardCharsets.UTF_8))) {
+            int ch;
+            while ((ch = reader.read()) != -1) {
+                if (ch == '\n') {
+                    lines++;
+                }
+                if (Character.isWhitespace(ch)) {
+                    inToken = false;
+                } else if (!inToken) {
+                    tokens++;
+                    inToken = true;
+                }
+            }
+        }
+
+        return new FileStats(lines, tokens);
+    }
+
+    public boolean isHugeFile(@NotNull File file) {
+        return file.length() > HUGE_FILE_THRESHOLD_BYTES;
+    }
+
+    public long getHugeFileThresholdBytes() {
+        return HUGE_FILE_THRESHOLD_BYTES;
+    }
+
+    @Nullable
+    public String exportFile(
+            @NotNull File file,
+            boolean flatMode,
+            @NotNull File outputFolder,
+            @NotNull HugeFileMode hugeFileMode,
+            @Nullable ProgressIndicator indicator
+    ) throws IOException {
         File targetFile;
 
         if (flatMode) {
@@ -492,7 +500,7 @@ public final class ProjectExportService {
                 counter++;
             }
         } else {
-            if (currentRootFolder == null) return;
+            if (currentRootFolder == null) return "Skipped file: no root folder selected";
             String relativePath = FileUtil.getRelativePath(currentRootFolder, file);
             if (relativePath == null) {
                 relativePath = file.getName();
@@ -505,9 +513,54 @@ public final class ProjectExportService {
             throw new IOException("Failed to create directory: " + parentDir.getPath());
         }
 
+        boolean hugeFile = isHugeFile(file);
+        if (hugeFile && hugeFileMode == HugeFileMode.SKIP) {
+            return "Skipped huge file: " + file.getName();
+        }
+
+        long copyLimit = (hugeFile && hugeFileMode == HugeFileMode.PARTIAL) ? PARTIAL_EXPORT_BYTES : Long.MAX_VALUE;
+        long copied = 0;
+
         try (BufferedInputStream bis = new BufferedInputStream(new FileInputStream(file));
              BufferedOutputStream bos = new BufferedOutputStream(new FileOutputStream(targetFile))) {
-            bis.transferTo(bos);
+            byte[] buffer = new byte[8192];
+            int read;
+            while ((read = bis.read(buffer)) != -1) {
+                if (indicator != null && indicator.isCanceled()) {
+                    throw new ProcessCanceledException();
+                }
+                long remaining = copyLimit - copied;
+                if (remaining <= 0) {
+                    break;
+                }
+                int toWrite = (int) Math.min(read, remaining);
+                bos.write(buffer, 0, toWrite);
+                copied += toWrite;
+                if (toWrite < read) {
+                    break;
+                }
+            }
+        }
+
+        if (hugeFile && hugeFileMode == HugeFileMode.PARTIAL) {
+            return "Partially exported huge file: " + file.getName();
+        }
+        return null;
+    }
+
+    public enum HugeFileMode {
+        SKIP,
+        PARTIAL,
+        FULL
+    }
+
+    public static final class FileStats {
+        public final long lines;
+        public final long tokens;
+
+        public FileStats(long lines, long tokens) {
+            this.lines = lines;
+            this.tokens = tokens;
         }
     }
 }

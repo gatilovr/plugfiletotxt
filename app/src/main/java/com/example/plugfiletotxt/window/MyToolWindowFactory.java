@@ -4,6 +4,7 @@ import com.intellij.icons.AllIcons;
 import com.intellij.ide.util.PropertiesComponent;
 import com.intellij.openapi.fileChooser.FileChooser;
 import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory;
+import com.intellij.openapi.progress.ProcessCanceledException;
 import com.intellij.openapi.progress.ProgressIndicator;
 import com.intellij.openapi.progress.Task;
 import com.intellij.openapi.project.Project;
@@ -25,12 +26,9 @@ import com.example.plugfiletotxt.service.ProjectExportService;
 import org.jetbrains.annotations.NotNull;
 
 import javax.swing.*;
-import javax.swing.border.TitledBorder;
 import java.awt.*;
 import java.io.File;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -39,6 +37,7 @@ public class MyToolWindowFactory implements ToolWindowFactory {
     private static final String LAST_PROJECT_FOLDER_KEY = "com.example.plugfiletotxt.lastProjectFolder";
     private static final String LAST_OUTPUT_FOLDER_KEY = "com.example.plugfiletotxt.lastOutputFolder";
     private static final String[] FILTER_OPTIONS = {"All Files", "Source Files (.java, .kt, .xml)", "Java/Kotlin Only", "XML Only"};
+    private static final String[] HUGE_FILE_OPTIONS = {"Skip huge files", "Partial export (first 1 MB)", "Export full file"};
 
     @Override
     public void createToolWindowContent(@NotNull Project project, @NotNull ToolWindow toolWindow) {
@@ -64,6 +63,7 @@ public class MyToolWindowFactory implements ToolWindowFactory {
         private JCheckBox respectGitignoreCheckBox;
         private JCheckBox flatExportCheckBox;
         private JCheckBox openFolderCheckBox;
+        private ComboBox<String> hugeFileModeComboBox;
         private JButton exportButton;
         private JButton refreshButton;
         private JProgressBar progressBar;
@@ -232,6 +232,12 @@ public class MyToolWindowFactory implements ToolWindowFactory {
             openFolderCheckBox = new JCheckBox("Open after export");
             openFolderCheckBox.setSelected(true);
             exportPanel.add(openFolderCheckBox);
+
+            exportPanel.add(Box.createHorizontalStrut(10));
+            exportPanel.add(new JLabel("Huge files:"));
+            hugeFileModeComboBox = new ComboBox<>(HUGE_FILE_OPTIONS);
+            hugeFileModeComboBox.setSelectedIndex(1);
+            exportPanel.add(hugeFileModeComboBox);
 
             topPanel.add(exportPanel);
 
@@ -452,20 +458,35 @@ public class MyToolWindowFactory implements ToolWindowFactory {
             long totalSize = 0;
             long totalLines = 0;
             long totalTokens = 0;
+            int hugeFiles = 0;
 
             for (File file : selected) {
                 totalSize += file.length();
+                if (service.isHugeFile(file)) {
+                    hugeFiles++;
+                }
                 try {
-                    String content = Files.readString(file.toPath(), StandardCharsets.UTF_8);
-                    totalLines += content.split("\n").length;
-                    totalTokens += content.split("\\s+").length;
+                    ProjectExportService.FileStats stats = service.countFileStats(file);
+                    totalLines += stats.lines;
+                    totalTokens += stats.tokens;
                 } catch (IOException ignored) {}
             }
 
             double sizeKB = totalSize / 1024.0;
-            String stats = String.format("Selected: %d files | %.2f KB | %d lines | ~%d tokens",
-                    selected.size(), sizeKB, totalLines, totalTokens);
+            double hugeThresholdMb = service.getHugeFileThresholdBytes() / (1024.0 * 1024.0);
+            String stats = String.format(
+                    "Selected: %d files | %.2f KB | %d lines | ~%d tokens | huge(>%.0fMB): %d",
+                    selected.size(), sizeKB, totalLines, totalTokens, hugeThresholdMb, hugeFiles
+            );
             statsLabel.setText(stats);
+        }
+
+        private ProjectExportService.HugeFileMode getHugeFileMode() {
+            return switch (hugeFileModeComboBox.getSelectedIndex()) {
+                case 0 -> ProjectExportService.HugeFileMode.SKIP;
+                case 2 -> ProjectExportService.HugeFileMode.FULL;
+                default -> ProjectExportService.HugeFileMode.PARTIAL;
+            };
         }
 
         private File getOutputFolderFromField() {
@@ -529,11 +550,13 @@ public class MyToolWindowFactory implements ToolWindowFactory {
 
             boolean flatMode = flatExportCheckBox.isSelected();
             File finalOutputFolder = outputFolder;
+            ProjectExportService.HugeFileMode hugeFileMode = getHugeFileMode();
 
             new Task.Backgroundable(project, "Exporting files...", true) {
                 private int processedFiles = 0;
                 private final int totalFiles = selectedFiles.size();
                 private final List<String> errors = new ArrayList<>();
+                private final List<String> warnings = new ArrayList<>();
 
                 @Override
                 public void run(@NotNull ProgressIndicator indicator) {
@@ -549,7 +572,12 @@ public class MyToolWindowFactory implements ToolWindowFactory {
                         indicator.setFraction((double) processedFiles / totalFiles);
 
                         try {
-                            service.exportFile(file, flatMode, finalOutputFolder);
+                            String warning = service.exportFile(file, flatMode, finalOutputFolder, hugeFileMode, indicator);
+                            if (warning != null) {
+                                warnings.add(warning);
+                            }
+                        } catch (ProcessCanceledException canceled) {
+                            throw canceled;
                         } catch (Exception e) {
                             errors.add("Failed to export " + file.getName() + ": " + e.getMessage());
                         }
@@ -570,6 +598,12 @@ public class MyToolWindowFactory implements ToolWindowFactory {
                         message.append("\nErrors occurred:\n");
                         for (String error : errors) {
                             message.append("- ").append(error).append("\n");
+                        }
+                    }
+                    if (!warnings.isEmpty()) {
+                        message.append("\nWarnings:\n");
+                        for (String warning : warnings) {
+                            message.append("- ").append(warning).append("\n");
                         }
                     }
 

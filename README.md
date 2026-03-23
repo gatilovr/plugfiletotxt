@@ -45,6 +45,7 @@ A universal plugin for exporting code files from any project directory to text f
    - Click "Export" to start the export process
    - Check "Without folders" to export all files to a single directory
    - Check "Open folder after export" to automatically open the output directory
+   - Choose a huge-file policy: skip, partial (first 1 MB), or full export
    - View progress and results in the dialog
 
 ## Technical Architecture
@@ -73,6 +74,34 @@ Files are exported as .txt files with their original content. When "Without fold
 - **Enhanced Flexibility**: Choose exactly which files to export from any directory
 
 Perfect for preparing codebases for AI analysis, code reviews, documentation generation, or sharing with team members.
+
+## Use Cases and Example Output
+
+### Use cases
+
+- **AI code review context**: Export only `src`, `build.gradle`, and config files.
+- **Bugfix handoff**: Export files touched by a feature/fix plus related configs.
+- **Architecture explanation**: Export key modules and README/docs into one bundle.
+
+### Example output (structured mode)
+
+```text
+output/
+  app/src/main/java/com/example/plugfiletotxt/service/ProjectExportService.java.txt
+  app/src/main/java/com/example/plugfiletotxt/window/MyToolWindowFactory.java.txt
+  README.md.txt
+  build.gradle.kts.txt
+```
+
+### Example output (flat mode)
+
+```text
+output/
+  ProjectExportService.java.txt
+  MyToolWindowFactory.java.txt
+  README.md.txt
+  build.gradle.kts.txt
+```
 
 ## Privacy
 
