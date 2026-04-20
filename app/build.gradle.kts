@@ -2,7 +2,8 @@ import org.jetbrains.intellij.platform.gradle.IntelliJPlatformType
 
 plugins {
     id("java")
-    id("org.jetbrains.intellij.platform") version "2.13.1"
+    id("org.jetbrains.intellij.platform") version "2.14.0"
+    id("com.diffplug.spotless") version "6.25.0"
 }
 
 group = "io.gatil"
@@ -21,6 +22,8 @@ dependencies {
         create(IntelliJPlatformType.IntellijIdeaCommunity, "2024.3")
         bundledPlugin("com.intellij.java")
     }
+    
+    testImplementation("junit:junit:4.13.2")
 }
 
 java {
@@ -52,5 +55,24 @@ tasks {
         sinceBuild.set("243")
         // Убираем ограничение до конкретной версии
         untilBuild.set(provider { null })
+    }
+    
+    // Disable instrumentCode to avoid JDK path issues
+    instrumentCode {
+        enabled = false
+    }
+    
+    instrumentTestCode {
+        enabled = false
+    }
+}
+
+spotless {
+    java {
+        target("src/**/*.java")
+        googleJavaFormat()
+        removeUnusedImports()
+        trimTrailingWhitespace()
+        endWithNewline()
     }
 }
