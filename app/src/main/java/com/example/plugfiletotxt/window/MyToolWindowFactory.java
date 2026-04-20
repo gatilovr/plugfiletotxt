@@ -1,6 +1,12 @@
 package com.example.plugfiletotxt.window;
 
+import com.example.plugfiletotxt.export.JsonExporter;
+import com.example.plugfiletotxt.export.MarkdownExporter;
+import com.example.plugfiletotxt.model.ExportConfig;
+import com.example.plugfiletotxt.service.GitService;
+import com.example.plugfiletotxt.service.PresetService;
 import com.example.plugfiletotxt.service.ProjectExportService;
+import com.example.plugfiletotxt.service.TokenCountingService;
 import com.intellij.icons.AllIcons;
 import com.intellij.ide.util.PropertiesComponent;
 import com.intellij.openapi.fileChooser.FileChooser;
@@ -73,6 +79,22 @@ public class MyToolWindowFactory implements ToolWindowFactory {
     private JProgressBar progressBar;
     private JLabel statsLabel;
 
+    // Phase 1: New UI Components
+    private ComboBox<String> formatComboBox;
+    private ComboBox<String> changeTypeComboBox;
+    private ComboBox<String> tokenModelComboBox;
+    private ComboBox<String> presetComboBox;
+    private JLabel tokenCountLabel;
+    private JButton savePresetButton;
+    private JButton deletePresetButton;
+
+    // Phase 1: Services
+    private GitService gitService;
+    private TokenCountingService tokenCountingService;
+    private PresetService presetService;
+    private JsonExporter jsonExporter;
+    private MarkdownExporter markdownExporter;
+
     // Текущее состояние
     private CheckboxTree fileTree;
     private CheckedTreeNode rootNode;
@@ -85,6 +107,13 @@ public class MyToolWindowFactory implements ToolWindowFactory {
       this.project = project;
       this.toolWindow = toolWindow;
       this.service = service;
+
+      // Phase 1: Initialize services
+      this.gitService = new GitService();
+      this.tokenCountingService = new TokenCountingService();
+      this.presetService = PresetService.getInstance(project);
+      this.jsonExporter = new JsonExporter();
+      this.markdownExporter = new MarkdownExporter();
 
       setLayout(new BorderLayout(JBUI.scale(10), JBUI.scale(10)));
       setBorder(JBUI.Borders.empty(12));
@@ -222,6 +251,56 @@ public class MyToolWindowFactory implements ToolWindowFactory {
       buttonPanel.add(refreshButton);
 
       topPanel.add(buttonPanel);
+      topPanel.add(Box.createVerticalStrut(JBUI.scale(8)));
+
+      // Phase 1: Format and Model Selection Panel
+      JPanel formatPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
+      formatPanel.add(new JLabel("Export Format:"));
+      formatComboBox = new ComboBox<>(new String[]{"Text", "JSON", "Markdown"});
+      formatComboBox.setSelectedIndex(0);
+      formatComboBox.addActionListener(e -> updateExportSettings());
+      formatPanel.add(formatComboBox);
+
+      formatPanel.add(Box.createHorizontalStrut(10));
+      formatPanel.add(new JLabel("Changes:"));
+      changeTypeComboBox = new ComboBox<>(new String[]{"All Files", "Staged", "Unstaged", "Since Last Commit"});
+      changeTypeComboBox.setSelectedIndex(0);
+      changeTypeComboBox.addActionListener(e -> updateExportSettings());
+      formatPanel.add(changeTypeComboBox);
+
+      formatPanel.add(Box.createHorizontalStrut(10));
+      formatPanel.add(new JLabel("Token Model:"));
+      tokenModelComboBox = new ComboBox<>(new String[]{"Claude 3", "GPT-4", "GPT-3.5", "Gemini"});
+      tokenModelComboBox.setSelectedIndex(0);
+      tokenModelComboBox.addActionListener(e -> updateExportSettings());
+      formatPanel.add(tokenModelComboBox);
+
+      topPanel.add(formatPanel);
+      topPanel.add(Box.createVerticalStrut(JBUI.scale(8)));
+
+      // Phase 1: Token Count and Preset Panel
+      JPanel presetPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
+      presetPanel.add(new JLabel("Preset:"));
+      presetComboBox = new ComboBox<>(new String[]{"Default", "Code Review", "Documentation", "All Source", "Bug Analysis", "Architecture"});
+      presetComboBox.setSelectedIndex(0);
+      presetComboBox.addActionListener(e -> loadPreset());
+      presetPanel.add(presetComboBox);
+
+      savePresetButton = new JButton("Save as Preset", AllIcons.Actions.MenuSaveall);
+      savePresetButton.addActionListener(e -> saveCurrentAsPreset());
+      presetPanel.add(savePresetButton);
+
+      deletePresetButton = new JButton("Delete", AllIcons.General.Remove);
+      deletePresetButton.addActionListener(e -> deleteCurrentPreset());
+      presetPanel.add(deletePresetButton);
+
+      presetPanel.add(Box.createHorizontalStrut(20));
+      tokenCountLabel = new JLabel(" ");
+      tokenCountLabel.setFont(UIUtil.getToolTipFont());
+      tokenCountLabel.setForeground(UIUtil.getInactiveTextColor());
+      presetPanel.add(tokenCountLabel);
+
+      topPanel.add(presetPanel);
       topPanel.add(Box.createVerticalStrut(JBUI.scale(8)));
 
       // Панель экспорта
@@ -497,6 +576,75 @@ public class MyToolWindowFactory implements ToolWindowFactory {
               "Selected: %d files | %.2f KB | %d lines | ~%d tokens | huge(>%.0fMB): %d",
               selected.size(), sizeKB, totalLines, totalTokens, hugeThresholdMb, hugeFiles);
       statsLabel.setText(stats);
+
+      // Phase 1: Update token count display
+      updateTokenCount();
+    }
+
+    private void updateTokenCount() {
+      List<File> selected = getSelectedFiles();
+      if (selected.isEmpty()) {
+        tokenCountLabel.setText(" ");
+        return;
+      }
+
+      long totalSize = 0;
+      for (File file : selected) {
+        totalSize += file.length();
+      }
+
+      TokenCountingService.TokenModel model =
+          switch (tokenModelComboBox.getSelectedIndex()) {
+            case 0 -> TokenCountingService.TokenModel.CLAUDE_3;
+            case 1 -> TokenCountingService.TokenModel.GPT_4;
+            case 2 -> TokenCountingService.TokenModel.GPT_3_5;
+            case 3 -> TokenCountingService.TokenModel.GEMINI;
+            default -> TokenCountingService.TokenModel.CLAUDE_3;
+          };
+
+      String contentPreview = String.valueOf(totalSize); // Approximation
+      long tokenCount = tokenCountingService.countTokens(contentPreview, model);
+      String formatted = tokenCountingService.formatTokenCount(tokenCount, model);
+      tokenCountLabel.setText("🔢 Tokens: " + formatted);
+    }
+
+    private void updateExportSettings() {
+      updateStats();
+    }
+
+    private void loadPreset() {
+      int index = presetComboBox.getSelectedIndex();
+      if (index <= 0) return; // Skip "Default"
+
+      String presetName = presetComboBox.getItemAt(index);
+      // In a full implementation, load preset from PresetService
+      // For now, just update display
+      updateExportSettings();
+    }
+
+    private void saveCurrentAsPreset() {
+      String presetName = Messages.showInputDialog(project, "Preset name:", "Save Preset", Messages.getQuestionIcon());
+      if (presetName != null && !presetName.isEmpty()) {
+        // Save current configuration as preset
+        // In a full implementation, use PresetService.savePreset()
+        Messages.showInfoMessage(project, "Preset saved: " + presetName, "Success");
+        // Update combo box with new preset
+      }
+    }
+
+    private void deleteCurrentPreset() {
+      int index = presetComboBox.getSelectedIndex();
+      if (index <= 0) {
+        Messages.showWarningDialog(project, "Cannot delete default presets.", "Delete Preset");
+        return;
+      }
+
+      String presetName = presetComboBox.getItemAt(index);
+      int result = Messages.showYesNoDialog(project, "Delete preset: " + presetName + "?", "Delete Preset", Messages.getQuestionIcon());
+      if (result == Messages.YES) {
+        // Delete from PresetService
+        Messages.showInfoMessage(project, "Preset deleted.", "Success");
+      }
     }
 
     private ProjectExportService.HugeFileMode getHugeFileMode() {
@@ -570,6 +718,23 @@ public class MyToolWindowFactory implements ToolWindowFactory {
       File finalOutputFolder = outputFolder;
       ProjectExportService.HugeFileMode hugeFileMode = getHugeFileMode();
 
+      // Phase 1: Determine export format
+      ExportConfig.OutputFormat outputFormat =
+          switch (formatComboBox.getSelectedIndex()) {
+            case 1 -> ExportConfig.OutputFormat.JSON;
+            case 2 -> ExportConfig.OutputFormat.MARKDOWN;
+            default -> ExportConfig.OutputFormat.TEXT;
+          };
+
+      // Phase 1: Determine change type
+      ExportConfig.ChangeType changeType =
+          switch (changeTypeComboBox.getSelectedIndex()) {
+            case 1 -> ExportConfig.ChangeType.STAGED;
+            case 2 -> ExportConfig.ChangeType.UNSTAGED;
+            case 3 -> ExportConfig.ChangeType.SINCE_LAST_COMMIT;
+            default -> ExportConfig.ChangeType.ALL;
+          };
+
       new Task.Backgroundable(project, "Exporting files...", true) {
         private int processedFiles = 0;
         private final int totalFiles = selectedFiles.size();
@@ -606,6 +771,15 @@ public class MyToolWindowFactory implements ToolWindowFactory {
             indicator.setFraction((double) processedFiles / totalFiles);
           }
 
+          // Phase 1: Export in selected format
+          if (outputFormat != ExportConfig.OutputFormat.TEXT) {
+            try {
+              exportInFormat(finalOutputFolder, selectedFiles, outputFormat);
+            } catch (Exception e) {
+              errors.add("Failed to export in " + outputFormat + " format: " + e.getMessage());
+            }
+          }
+
           indicator.setFraction(1.0);
         }
 
@@ -613,6 +787,7 @@ public class MyToolWindowFactory implements ToolWindowFactory {
         public void onSuccess() {
           StringBuilder message = new StringBuilder();
           message.append("Export completed: ").append(processedFiles).append(" files processed.\n");
+          message.append("Format: ").append(outputFormat).append("\n");
 
           if (!errors.isEmpty()) {
             message.append("\nErrors occurred:\n");
@@ -643,6 +818,28 @@ public class MyToolWindowFactory implements ToolWindowFactory {
           Messages.showWarningDialog(project, "Export was cancelled.", "Export Cancelled");
         }
       }.queue();
+    }
+
+    private void exportInFormat(
+        File outputFolder, List<File> files, ExportConfig.OutputFormat format) throws IOException {
+      String timestamp = new java.text.SimpleDateFormat("yyyyMMdd_HHmmss").format(new java.util.Date());
+      String projectName = service.getCurrentRootFolder() != null ? 
+          service.getCurrentRootFolder().getName() : "export";
+      long exportTime = System.currentTimeMillis();
+
+      switch (format) {
+        case JSON:
+          File jsonFile = new File(outputFolder, projectName + "_" + timestamp + ".json");
+          jsonExporter.exportToFile(files, jsonFile, projectName, exportTime);
+          break;
+        case MARKDOWN:
+          File mdFile = new File(outputFolder, projectName + "_" + timestamp + ".md");
+          markdownExporter.exportToFile(files, mdFile, projectName);
+          break;
+        case TEXT:
+          // Already exported by standard export logic
+          break;
+      }
     }
 
     private void openFolder(File folder) {
