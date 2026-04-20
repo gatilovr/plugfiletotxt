@@ -48,6 +48,47 @@ A universal plugin for exporting code files from any project directory to text f
    - Choose a huge-file policy: skip, partial (first 1 MB), or full export
    - View progress and results in the dialog
 
+## Build Requirements
+
+- **Java Development Kit (JDK)**: JDK 21 or later is required for building the plugin.
+- **IntelliJ Platform Gradle Plugin**: Version 2.14.0 or later.
+- **Target IntelliJ IDEA**: Community Edition 2024.3 (sinceBuild = "243").
+
+## Building and Testing
+
+### Build Commands
+
+```bash
+# Build plugin
+./gradlew :app:buildPlugin
+
+# Run unit tests (skip instrumentation due to JDK path issues)
+./gradlew :app:test --no-daemon -x instrumentCode -x instrumentTestCode
+
+# Check code formatting
+./gradlew :app:spotlessCheck
+
+# Apply formatting fixes
+./gradlew :app:spotlessApply
+
+# Verify plugin configuration
+./gradlew :app:verifyPluginConfiguration
+```
+
+### CI/CD
+
+The project includes GitHub Actions CI workflow (`.github/workflows/ci.yml`) that runs on every push/pull request:
+
+1. **Setup**: Java 21, Gradle
+2. **Tests**: Runs unit tests with instrumentation disabled
+3. **Formatting**: Checks code formatting with Spotless
+4. **Verification**: Verifies plugin configuration
+5. **Build**: Builds the plugin artifact
+
+### Known Issues
+
+- **Instrumentation tasks (`instrumentCode`, `instrumentTestCode`)**: Disabled in CI due to JDK path issues (`/usr/local/sdkman/candidates/java/21.0.10-ms/Packages does not exist`). This is a known issue with the IntelliJ Platform Gradle Plugin and certain JDK installations. The plugin still builds and works correctly without instrumentation.
+
 ## Technical Architecture
 
 The plugin has been refactored to work independently of Android Studio's Project object, making it universally compatible with any folder structure.
